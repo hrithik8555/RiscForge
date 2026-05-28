@@ -1,0 +1,53 @@
+name: ci
+
+# Runs on every push and pull request. Mirrors my local dev setup:
+#   - ubuntu-24.04 ships Verilator 5.020 which is what I run locally
+#   - Python 3.12 to match Debian 12
+#   - cocotb pinned to the 1.9 line because cocotb 2.0 needs Verilator 5.036+
+#
+# Today the workflow runs:
+#   - make lint   (verilator --lint-only over rtl/, must be clean)
+#   - make test   (every cocotb testbench)
+#
+# As the project grows, more steps land here:
+#   - reference model self-test against riscv-tests rv32ui (stage 1.5)
+#   - encoding_check.py to diff riscv_pkg.sv against encoding.py (stage 1.3)
+#   - run_benchmarks.py output diff against the committed perf JSON (stage 5)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: install verilator and make
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y verilator make
+          verilator --version
+
+      - name: set up python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: install cocotb
+        run: |
+          python -m pip install --upgrade pip
+          pip install 'cocotb<2'
+          cocotb-config --version
+
+      - name: lint
+        run: make lint
+
+      - name: test
+        run: make test

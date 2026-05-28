@@ -46,10 +46,12 @@ test-counter:
 
 # Static lint over every RTL file. I want this clean from day one because
 # Verilator warnings catch real bugs (latches, width mismatches, unused).
+# No -Wno-fatal and no `|| true`: warnings ARE errors here, both locally
+# and in CI. If a real false positive shows up later, I will silence it
+# in the source with an explicit waiver comment, not by weakening lint.
 lint:
 	@echo ">>> verilator lint over $(words $(RTL_FILES)) files"
-	@verilator --lint-only -Wall -Wno-fatal \
-		-I$(RTL_DIR)/pkg $(RTL_FILES) || true
+	@verilator --lint-only -Wall -I$(RTL_DIR)/pkg $(RTL_FILES)
 
 # Open the most recent VCD. cocotb dumps under tb/<module>/sim_build/, so
 # this search covers all of tb/ and sim/.
