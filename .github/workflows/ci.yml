@@ -53,6 +53,9 @@ jobs:
       - name: refmodel sanity tests
         run: make refmodel-test
 
+      - name: assembler sanity tests
+        run: make assembler-test
+
       - name: riscv-tests rv32ui through refmodel
         run: make riscv-tests
 

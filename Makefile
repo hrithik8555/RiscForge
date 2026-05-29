@@ -32,16 +32,18 @@ RTL_FILES := $(shell find $(RTL_DIR) -name '*.sv' 2>/dev/null)
 TB_TARGETS := test-counter
 
 # ---------- top-level targets
-.PHONY: all test encoding-check refmodel-test riscv-tests riscv-tests-build lint wave clean docs help $(TB_TARGETS)
+.PHONY: all test encoding-check refmodel-test assembler-test riscv-tests riscv-tests-build lint wave clean docs help $(TB_TARGETS)
 
 all: test
 
-# Run every cocotb test. Gated on the encoding tables agreeing and the
-# reference emulator self-test passing first. The order matters: if
-# riscv_pkg.sv and encoding.py disagree, nothing downstream is safe;
-# if the emulator itself is broken, any RTL lockstep that follows is
-# just two wrong things agreeing.
-test: encoding-check refmodel-test $(TB_TARGETS)
+# Run every cocotb test. Gated on the encoding tables agreeing, the
+# reference emulator self-test passing, and the assembler self-test
+# passing first. The order matters: if riscv_pkg.sv and encoding.py
+# disagree, nothing downstream is safe; if the emulator is broken,
+# any RTL lockstep that follows is just two wrong things agreeing;
+# and if the assembler is broken, the programs we write for the
+# lockstep would not match what we wrote in the source.
+test: encoding-check refmodel-test assembler-test $(TB_TARGETS)
 
 # Diff the SystemVerilog encoding package against the Python mirror.
 encoding-check:
@@ -54,6 +56,13 @@ encoding-check:
 refmodel-test:
 	@echo ">>> rv32i_emu sanity tests"
 	@python3 tools/refmodel/test_rv32i_emu.py
+
+# Assembler self-tests. Cross-checks include hand-traced B-type and
+# J-type bit scrambles, LI/LA expansions, and a small Fibonacci
+# program run through the (already-validated) emulator.
+assembler-test:
+	@echo ">>> assembler sanity tests"
+	@python3 tools/assembler/test_assemble.py
 
 # Deep validation: run the official riscv-tests rv32ui suite through
 # the Python emulator. Requires the RISC-V GCC toolchain (the build
@@ -121,6 +130,7 @@ help:
 	@echo "  test-counter       run tb/counter/Makefile"
 	@echo "  encoding-check     diff riscv_pkg.sv against encoding.py"
 	@echo "  refmodel-test      sanity tests for the Python RV32I emulator"
+	@echo "  assembler-test     sanity tests for the RV32I assembler"
 	@echo "  riscv-tests        run the official rv32ui suite through the emulator"
 	@echo "  riscv-tests-build  build the rv32ui ELFs (needs riscv64-unknown-elf-gcc)"
 	@echo "  lint               verilator --lint-only over rtl/"
