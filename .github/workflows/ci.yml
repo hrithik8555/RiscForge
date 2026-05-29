@@ -46,6 +46,9 @@ jobs:
           pip install 'cocotb<2'
           cocotb-config --version
 
+      - name: encoding check
+        run: make encoding-check
+
       - name: lint
         run: make lint
 

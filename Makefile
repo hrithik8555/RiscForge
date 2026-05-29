@@ -32,12 +32,20 @@ RTL_FILES := $(shell find $(RTL_DIR) -name '*.sv' 2>/dev/null)
 TB_TARGETS := test-counter
 
 # ---------- top-level targets
-.PHONY: all test lint wave clean docs help $(TB_TARGETS)
+.PHONY: all test encoding-check lint wave clean docs help $(TB_TARGETS)
 
 all: test
 
-# Run every cocotb test.
-test: $(TB_TARGETS)
+# Run every cocotb test. Gated on the encoding tables agreeing first,
+# because if rtl/pkg/riscv_pkg.sv and tools/refmodel/encoding.py disagree
+# then anything the tests say is downstream of a bug I would not want to
+# chase through cocotb logs.
+test: encoding-check $(TB_TARGETS)
+
+# Diff the SystemVerilog encoding package against the Python mirror.
+encoding-check:
+	@echo ">>> encoding_check.py: rtl/pkg/riscv_pkg.sv vs tools/refmodel/encoding.py"
+	@python3 scripts/encoding_check.py
 
 # Explicit per-module dispatchers. One per testbench directory under tb/.
 test-counter:
@@ -83,8 +91,9 @@ clean:
 
 help:
 	@echo "RiscForge make targets:"
-	@echo "  test             run all cocotb tests"
+	@echo "  test             encoding-check then all cocotb tests"
 	@echo "  test-counter     run tb/counter/Makefile"
+	@echo "  encoding-check   diff riscv_pkg.sv against encoding.py"
 	@echo "  lint             verilator --lint-only over rtl/"
 	@echo "  wave             open most recent VCD in GTKWave"
 	@echo "  docs             render Mermaid diagrams to SVG"
