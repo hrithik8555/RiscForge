@@ -25,11 +25,16 @@ TB_DIR    := $(REPO_ROOT)/tb
 SIM_DIR   := $(REPO_ROOT)/sim
 DOCS_DIR  := $(REPO_ROOT)/docs
 
-# Every SystemVerilog file in rtl/. Used by lint.
-RTL_FILES := $(shell find $(RTL_DIR) -name '*.sv' 2>/dev/null)
+# Every SystemVerilog file in rtl/. Used by lint. Package files must
+# come first because every module imports riscv_pkg::* and Verilator
+# processes files in argument order. I list pkg/ explicitly and then
+# append the rest.
+PKG_FILES := $(shell find $(RTL_DIR)/pkg -name '*.sv' 2>/dev/null)
+MOD_FILES := $(shell find $(RTL_DIR) -path $(RTL_DIR)/pkg -prune -o -name '*.sv' -print 2>/dev/null)
+RTL_FILES := $(PKG_FILES) $(MOD_FILES)
 
 # Every module test we know about. Add a new line here when adding a module.
-TB_TARGETS := test-counter
+TB_TARGETS := test-counter test-pc_register test-instr_memory test-reg_file test-alu test-imm_gen
 
 # ---------- top-level targets
 .PHONY: all test encoding-check refmodel-test assembler-test riscv-tests riscv-tests-build lint wave clean docs help $(TB_TARGETS)
@@ -87,6 +92,26 @@ test-counter:
 	@echo ">>> running counter tests"
 	$(MAKE) -C $(TB_DIR)/counter SIM=verilator
 
+test-pc_register:
+	@echo ">>> running pc_register tests"
+	$(MAKE) -C $(TB_DIR)/pc_register SIM=verilator
+
+test-instr_memory:
+	@echo ">>> running instr_memory tests"
+	$(MAKE) -C $(TB_DIR)/instr_memory SIM=verilator
+
+test-reg_file:
+	@echo ">>> running reg_file tests"
+	$(MAKE) -C $(TB_DIR)/reg_file SIM=verilator
+
+test-alu:
+	@echo ">>> running alu tests"
+	$(MAKE) -C $(TB_DIR)/alu SIM=verilator
+
+test-imm_gen:
+	@echo ">>> running imm_gen tests"
+	$(MAKE) -C $(TB_DIR)/imm_gen SIM=verilator
+
 # Static lint over every RTL file. I want this clean from day one because
 # Verilator warnings catch real bugs (latches, width mismatches, unused).
 # No -Wno-fatal and no `|| true`: warnings ARE errors here, both locally
@@ -94,7 +119,7 @@ test-counter:
 # in the source with an explicit waiver comment, not by weakening lint.
 lint:
 	@echo ">>> verilator lint over $(words $(RTL_FILES)) files"
-	@verilator --lint-only -Wall -I$(RTL_DIR)/pkg $(RTL_FILES)
+	@verilator --lint-only -Wall -Wno-MULTITOP -I$(RTL_DIR)/pkg $(RTL_FILES)
 
 # Open the most recent VCD. cocotb dumps under tb/<module>/sim_build/, so
 # this search covers all of tb/ and sim/.

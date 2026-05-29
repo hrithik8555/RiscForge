@@ -349,6 +349,82 @@ def test_tohost_pass():
     assert cpu.regs[3] == 0
 
 
+def test_addi_imm_extremes():
+    """Boundary check for the 12-bit signed immediate field.
+    +2047 is the max positive, -2048 the min negative. Out of range
+    values would silently wrap; I am not testing those because the
+    inline encoder here would mask them, same as the spec encoder.
+    """
+    cpu = make_cpu(
+        addi(1, 0, 2047),
+        addi(2, 0, -2048),
+    )
+    run_n(cpu, 2)
+    assert cpu.regs[1] == 2047
+    assert cpu.regs[2] == u32(-2048)  # 0xFFFFF800
+
+
+def test_branch_backward_loop():
+    """Backward branch with a negative offset.
+
+    This is the test that exercises the full B-type immediate scramble:
+    -8 in 13-bit two's-complement is 0x1FF8, which sets imm[12] (sign,
+    inst[31]), imm[11] (inst[7]), and all of imm[10:5] (inst[30:25]),
+    plus the low imm[4:1] field. If the scramble is wrong in either
+    encoder or decoder, this loop will not converge.
+    """
+    cpu = make_cpu(
+        addi(1, 0, 3),        # 0:  x1 = 3 (counter)
+        addi(2, 0, 0),        # 4:  x2 = 0 (accumulator)
+        addi(2, 2, 1),        # 8:  x2 += 1                 <- loop top
+        addi(1, 1, -1),       # 12: x1 -= 1
+        bne(1, 0, -8),        # 16: if x1 != 0, branch back to 8
+        ECALL,                # 20: halt
+    )
+    reason = cpu.run(max_steps=50)
+    assert reason == "ecall"
+    assert cpu.regs[1] == 0
+    assert cpu.regs[2] == 3
+
+
+def test_jal_forward_and_backward():
+    """JAL forward (+16) and JAL backward (-12) in the same program.
+
+    Forward exercises a small positive J-type immediate. Backward sets
+    imm[20] (sign), imm[19:12], and imm[11] in the scramble. If either
+    direction is wrong this test diverges or executes the wrong path.
+    """
+    cpu = make_cpu(
+        addi(1, 0, 1),        # 0:  x1 = 1
+        jal(0, 16),           # 4:  jump forward to 20 (target=PC+16)
+        addi(1, 1, 10),       # 8:  x1 += 10 (reached from backward jump)
+        addi(2, 0, 99),       # 12: x2 = 99
+        ECALL,                # 16: halt
+        jal(0, -12),          # 20: jump backward to 8 (target=PC-12)
+    )
+    reason = cpu.run(max_steps=20)
+    assert reason == "ecall"
+    assert cpu.regs[1] == 11
+    assert cpu.regs[2] == 99
+
+
+def test_lh_lhu_sign_vs_zero_extension():
+    """SH 0x8000 then LH / LHU. Mirror of the LB / LBU test but at
+    halfword width. If LH does not sign-extend the loaded halfword,
+    x3 will come back as 0x00008000 instead of 0xFFFF8000.
+    """
+    cpu = make_cpu(
+        lui(1, 0x8),              # x1 = 0x00008000 (value to store)
+        addi(2, 0, 0x300),        # x2 = 0x300 (aligned addr)
+        sh(2, 1, 0),              # mem[0x300] = 0x8000 (low half of x1)
+        lh(3, 2, 0),              # x3 = sign-ext(0x8000) = 0xFFFF8000
+        lhu(4, 2, 0),             # x4 = zero-ext(0x8000) = 0x00008000
+    )
+    run_n(cpu, 5)
+    assert cpu.regs[3] == 0xFFFF8000
+    assert cpu.regs[4] == 0x00008000
+
+
 def test_misaligned_load_traps():
     cpu = make_cpu(addi(1, 0, 0x101), lw(2, 1, 0))
     try:
