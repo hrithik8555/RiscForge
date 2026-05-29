@@ -32,20 +32,28 @@ RTL_FILES := $(shell find $(RTL_DIR) -name '*.sv' 2>/dev/null)
 TB_TARGETS := test-counter
 
 # ---------- top-level targets
-.PHONY: all test encoding-check lint wave clean docs help $(TB_TARGETS)
+.PHONY: all test encoding-check refmodel-test lint wave clean docs help $(TB_TARGETS)
 
 all: test
 
-# Run every cocotb test. Gated on the encoding tables agreeing first,
-# because if rtl/pkg/riscv_pkg.sv and tools/refmodel/encoding.py disagree
-# then anything the tests say is downstream of a bug I would not want to
-# chase through cocotb logs.
-test: encoding-check $(TB_TARGETS)
+# Run every cocotb test. Gated on the encoding tables agreeing and the
+# reference emulator self-test passing first. The order matters: if
+# riscv_pkg.sv and encoding.py disagree, nothing downstream is safe;
+# if the emulator itself is broken, any RTL lockstep that follows is
+# just two wrong things agreeing.
+test: encoding-check refmodel-test $(TB_TARGETS)
 
 # Diff the SystemVerilog encoding package against the Python mirror.
 encoding-check:
 	@echo ">>> encoding_check.py: rtl/pkg/riscv_pkg.sv vs tools/refmodel/encoding.py"
 	@python3 scripts/encoding_check.py
+
+# Shallow sanity tests for the Python RV32I emulator. The deep gate is
+# stage 1.5 (riscv-tests rv32ui run through the emulator); this catches
+# bugs that would make even that suite useless.
+refmodel-test:
+	@echo ">>> rv32i_emu sanity tests"
+	@python3 tools/refmodel/test_rv32i_emu.py
 
 # Explicit per-module dispatchers. One per testbench directory under tb/.
 test-counter:
@@ -91,9 +99,10 @@ clean:
 
 help:
 	@echo "RiscForge make targets:"
-	@echo "  test             encoding-check then all cocotb tests"
+	@echo "  test             encoding-check, refmodel-test, then all cocotb tests"
 	@echo "  test-counter     run tb/counter/Makefile"
 	@echo "  encoding-check   diff riscv_pkg.sv against encoding.py"
+	@echo "  refmodel-test    sanity tests for the Python RV32I emulator"
 	@echo "  lint             verilator --lint-only over rtl/"
 	@echo "  wave             open most recent VCD in GTKWave"
 	@echo "  docs             render Mermaid diagrams to SVG"

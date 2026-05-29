@@ -49,6 +49,9 @@ jobs:
       - name: encoding check
         run: make encoding-check
 
+      - name: refmodel sanity tests
+        run: make refmodel-test
+
       - name: lint
         run: make lint
 
