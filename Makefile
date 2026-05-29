@@ -32,7 +32,7 @@ RTL_FILES := $(shell find $(RTL_DIR) -name '*.sv' 2>/dev/null)
 TB_TARGETS := test-counter
 
 # ---------- top-level targets
-.PHONY: all test encoding-check refmodel-test lint wave clean docs help $(TB_TARGETS)
+.PHONY: all test encoding-check refmodel-test riscv-tests riscv-tests-build lint wave clean docs help $(TB_TARGETS)
 
 all: test
 
@@ -49,11 +49,29 @@ encoding-check:
 	@python3 scripts/encoding_check.py
 
 # Shallow sanity tests for the Python RV32I emulator. The deep gate is
-# stage 1.5 (riscv-tests rv32ui run through the emulator); this catches
-# bugs that would make even that suite useless.
+# `make riscv-tests` (the official rv32ui suite); this catches bugs that
+# would make even that suite useless.
 refmodel-test:
 	@echo ">>> rv32i_emu sanity tests"
 	@python3 tools/refmodel/test_rv32i_emu.py
+
+# Deep validation: run the official riscv-tests rv32ui suite through
+# the Python emulator. Requires the RISC-V GCC toolchain (the build
+# script prints an install hint if it is missing) and the pyelftools
+# Python package. Not wired into `make test` because the one-time build
+# step takes ~2 minutes; CI runs it explicitly.
+RISCV_TESTS_MARKER := tools/refmodel/_riscv_tests_bin/.built
+
+riscv-tests: $(RISCV_TESTS_MARKER)
+	@echo ">>> running riscv-tests rv32ui through the emulator"
+	@python3 tools/refmodel/riscv_tests_runner.py
+
+riscv-tests-build: $(RISCV_TESTS_MARKER)
+
+$(RISCV_TESTS_MARKER):
+	@echo ">>> building riscv-tests rv32ui (one-time, ~2 min)"
+	@bash scripts/build_riscv_tests.sh
+	@touch $(RISCV_TESTS_MARKER)
 
 # Explicit per-module dispatchers. One per testbench directory under tb/.
 test-counter:
@@ -99,11 +117,13 @@ clean:
 
 help:
 	@echo "RiscForge make targets:"
-	@echo "  test             encoding-check, refmodel-test, then all cocotb tests"
-	@echo "  test-counter     run tb/counter/Makefile"
-	@echo "  encoding-check   diff riscv_pkg.sv against encoding.py"
-	@echo "  refmodel-test    sanity tests for the Python RV32I emulator"
-	@echo "  lint             verilator --lint-only over rtl/"
-	@echo "  wave             open most recent VCD in GTKWave"
-	@echo "  docs             render Mermaid diagrams to SVG"
-	@echo "  clean            remove sim artifacts and caches"
+	@echo "  test               encoding-check, refmodel-test, then all cocotb tests"
+	@echo "  test-counter       run tb/counter/Makefile"
+	@echo "  encoding-check     diff riscv_pkg.sv against encoding.py"
+	@echo "  refmodel-test      sanity tests for the Python RV32I emulator"
+	@echo "  riscv-tests        run the official rv32ui suite through the emulator"
+	@echo "  riscv-tests-build  build the rv32ui ELFs (needs riscv64-unknown-elf-gcc)"
+	@echo "  lint               verilator --lint-only over rtl/"
+	@echo "  wave               open most recent VCD in GTKWave"
+	@echo "  docs               render Mermaid diagrams to SVG"
+	@echo "  clean              remove sim artifacts and caches"

@@ -17,8 +17,14 @@ Honest shortcuts and decisions:
   riscv-tests to signal pass/fail by writing to that location.
 - FENCE and FENCE.I decode as NOPs because there are no caches at
   this layer of the stack.
-- CSR instructions (Zicsr extension) are not implemented at stage 1.
-  They trap as illegal. Tests in rv32ui do not use them.
+- The Zicsr extension is implemented just enough for the riscv-tests
+  boot/env code to run: CSRRW/CSRRS/CSRRC and their immediate forms,
+  MRET, WFI as a NOP. Every CSR backs a dict slot, no privilege
+  checks, no side effects beyond the read/modify/write semantics.
+  The user-mode test code itself stays pure RV32I; this layer just
+  unblocks the boot. The RTL processor at stage 1 does not implement
+  CSRs at all; the test programs we hand-write for RTL run without
+  the env wrapper.
 
 Spec reference: RISC-V Unprivileged ISA Specification, Volume 1,
 version 20191213. Section and table references inline where helpful.
@@ -149,11 +155,28 @@ class Trap(Exception):
 class RV32I:
     """One instance is one CPU's worth of state."""
 
+    # CSR addresses we know about by name. Used internally; the RTL
+    # decoder does not need these, so they live here rather than in
+    # encoding.py.
+    _CSR_MTVEC   = 0x305
+    _CSR_MEPC    = 0x341
+    _CSR_MCAUSE  = 0x342
+    _CSR_MHARTID = 0xF14
+
+    # SYSTEM funct12 values handled inside the funct3=0 dispatch.
+    _F12_MRET = 0x302
+    _F12_WFI  = 0x105
+
+    # mcause values for the traps we generate.
+    _CAUSE_BREAKPOINT = 3
+    _CAUSE_ECALL_M    = 11
+
     def __init__(
         self,
         mem_size: int = 64 * 1024,
         mem_base: int = 0,
         tohost_addr: int = 0x80001000,
+        trap_on_ecall: bool = False,
     ):
         self.regs = [0] * 32
         self.pc = mem_base
@@ -164,6 +187,18 @@ class RV32I:
         self.halted = False
         self.halt_reason: Optional[str] = None
         self.steps = 0
+        # CSR storage. Defaults are zero on first read; we pre-set the
+        # ones whose hardwired value the boot code might read back.
+        self.csrs: dict[int, int] = {self._CSR_MHARTID: 0}
+        # When True, ECALL and EBREAK go through the trap mechanism
+        # (save PC to mepc, set mcause, jump to mtvec) instead of
+        # halting. The riscv-tests env relies on this: the test code
+        # ECALLs, the env's trap handler reads the test result and
+        # writes it to tohost, and my emulator halts on the tohost
+        # write. Default is False so hand-written test programs (like
+        # the sanity tests in test_rv32i_emu.py) keep halting cleanly
+        # on ECALL.
+        self.trap_on_ecall = trap_on_ecall
 
     # ---------- memory: tohost is intercepted in store(), everything
     # else routes through _mem_index for a flat bytearray.
@@ -335,27 +370,68 @@ class RV32I:
 
         elif opcode == Opcode.SYSTEM:
             funct12 = (inst >> 20) & 0xFFF
-            if funct3 != 0:
-                # CSR instructions are not implemented at stage 1.
-                raise Trap(
-                    "illegal", pc, f"system funct3={funct3} (CSR not implemented)"
-                )
-            if funct12 == F12_ECALL:
-                self.halted = True
-                self.halt_reason = "ecall"
-            elif funct12 == F12_EBREAK:
-                self.halted = True
-                self.halt_reason = "ebreak"
+            if funct3 == 0:
+                # ECALL, EBREAK, MRET, WFI all share funct3=0; the
+                # funct12 field distinguishes them.
+                if funct12 == F12_ECALL:
+                    if self.trap_on_ecall:
+                        next_pc = self._take_trap(pc, self._CAUSE_ECALL_M)
+                    else:
+                        self.halted = True
+                        self.halt_reason = "ecall"
+                elif funct12 == F12_EBREAK:
+                    if self.trap_on_ecall:
+                        next_pc = self._take_trap(pc, self._CAUSE_BREAKPOINT)
+                    else:
+                        self.halted = True
+                        self.halt_reason = "ebreak"
+                elif funct12 == self._F12_MRET:
+                    # Return from machine-mode trap or boot. The env code
+                    # in riscv-tests puts the user code address in mepc
+                    # and then mrets to it. No privilege-mode model here
+                    # beyond that.
+                    next_pc = u32(self.csrs.get(self._CSR_MEPC, 0))
+                elif funct12 == self._F12_WFI:
+                    # No interrupts in this oracle, so wait-for-interrupt
+                    # is a NOP.
+                    pass
+                else:
+                    raise Trap("illegal", pc, f"system funct12=0x{funct12:03x}")
+            elif funct3 == 0b100:
+                # Reserved funct3 in the SYSTEM opcode space.
+                raise Trap("illegal", pc, "system funct3=0b100 reserved")
             else:
-                raise Trap("illegal", pc, f"system funct12=0x{funct12:03x}")
+                # Zicsr: CSRRW / CSRRS / CSRRC and their immediate forms.
+                # funct3 bit 2 selects the immediate variant; the low two
+                # bits encode the operation (01=W, 10=S, 11=C).
+                csr = funct12
+                is_imm = (funct3 & 0b100) != 0
+                src_val = rs1 if is_imm else self.r(rs1)
+                op = funct3 & 0b011
+
+                old = self.csrs.get(csr, 0)
+
+                # CSRRW always writes the CSR. CSRRS/CSRRC suppress the
+                # write side effects when the source is zero, per spec;
+                # this is what lets pure CSR reads be encoded as
+                # `csrrs rd, csr, x0` without touching the CSR.
+                if op == 0b01:
+                    self.csrs[csr] = u32(src_val)
+                elif src_val != 0:
+                    if op == 0b10:
+                        self.csrs[csr] = u32(old | src_val)
+                    elif op == 0b11:
+                        self.csrs[csr] = u32(old & ~src_val)
+
+                self.wr(rd, old)
 
         else:
             raise Trap("illegal", pc, f"opcode=0x{opcode:02x}")
 
         # Record rd write if a non-x0 destination was actually updated by
-        # this instruction (a write to x0 was silently discarded by wr()).
-        # I detect "did we write?" by checking the opcode classes that
-        # write rd. This keeps the trace honest for lockstep purposes.
+        # this instruction. ECALL / EBREAK / MRET / WFI all have rd=0 by
+        # canonical encoding, so SYSTEM is included here for the CSR
+        # variants without polluting the trace for the others.
         if rd != 0 and opcode in (
             Opcode.LUI,
             Opcode.AUIPC,
@@ -364,6 +440,7 @@ class RV32I:
             Opcode.LOAD,
             Opcode.IMM,
             Opcode.REG,
+            Opcode.SYSTEM,
         ):
             trace.rd_write = (rd, self.regs[rd])
 
@@ -424,6 +501,19 @@ class RV32I:
         if f3 == F3Op.AND:
             return u32(a & b)
         raise Trap("illegal", pc, f"OP funct3={f3}")
+
+    def _take_trap(self, pc: int, cause: int) -> int:
+        """Take a synchronous trap. Saves PC to mepc, sets mcause,
+        returns the address to jump to (mtvec & ~3, Direct mode only).
+
+        No mstatus updates: the riscv-tests env handler does not depend
+        on MIE/MPIE/MPP state and just reads mcause + a few registers
+        before writing to tohost and looping. Adding faithful mstatus
+        handling would matter for a real OS, not for the oracle role.
+        """
+        self.csrs[self._CSR_MEPC] = u32(pc)
+        self.csrs[self._CSR_MCAUSE] = u32(cause)
+        return u32(self.csrs.get(self._CSR_MTVEC, 0) & ~0x3)
 
     def run(self, max_steps: int = 1_000_000) -> str:
         """Run until halted or step limit reached. Returns the halt reason."""

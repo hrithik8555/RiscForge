@@ -29,21 +29,22 @@ jobs:
       - name: checkout
         uses: actions/checkout@v4
 
-      - name: install verilator and make
+      - name: install apt deps (verilator, make, riscv toolchain)
         run: |
           sudo apt-get update
-          sudo apt-get install -y verilator make
+          sudo apt-get install -y verilator make gcc-riscv64-unknown-elf
           verilator --version
+          riscv64-unknown-elf-gcc --version | head -1
 
       - name: set up python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: install cocotb
+      - name: install python deps (cocotb, pyelftools)
         run: |
           python -m pip install --upgrade pip
-          pip install 'cocotb<2'
+          pip install 'cocotb<2' pyelftools
           cocotb-config --version
 
       - name: encoding check
@@ -51,6 +52,9 @@ jobs:
 
       - name: refmodel sanity tests
         run: make refmodel-test
+
+      - name: riscv-tests rv32ui through refmodel
+        run: make riscv-tests
 
       - name: lint
         run: make lint
