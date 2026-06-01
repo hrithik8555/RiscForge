@@ -34,7 +34,7 @@ MOD_FILES := $(shell find $(RTL_DIR) -path $(RTL_DIR)/pkg -prune -o -name '*.sv'
 RTL_FILES := $(PKG_FILES) $(MOD_FILES)
 
 # Every module test we know about. Add a new line here when adding a module.
-TB_TARGETS := test-counter test-pc_register test-instr_memory test-reg_file test-alu test-imm_gen test-decoder test-data_memory
+TB_TARGETS := test-counter test-pc_register test-instr_memory test-reg_file test-alu test-imm_gen test-decoder test-data_memory test-branch_unit
 
 # ---------- top-level targets
 .PHONY: all test encoding-check refmodel-test assembler-test riscv-tests riscv-tests-build lint wave clean docs help $(TB_TARGETS)
@@ -119,6 +119,10 @@ test-decoder:
 test-data_memory:
 	@echo ">>> running data_memory tests"
 	$(MAKE) -C $(TB_DIR)/data_memory SIM=verilator
+
+test-branch_unit:
+	@echo ">>> running branch_unit tests"
+	$(MAKE) -C $(TB_DIR)/branch_unit SIM=verilator
 
 # Static lint over every RTL file. I want this clean from day one because
 # Verilator warnings catch real bugs (latches, width mismatches, unused).
