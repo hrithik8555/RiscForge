@@ -37,7 +37,7 @@ RTL_FILES := $(PKG_FILES) $(MOD_FILES)
 TB_TARGETS := test-counter test-pc_register test-instr_memory test-reg_file test-alu test-imm_gen test-decoder test-data_memory test-branch_unit test-top test-program
 
 # ---------- top-level targets
-.PHONY: all test encoding-check refmodel-test assembler-test riscv-tests riscv-tests-build lint wave clean docs help $(TB_TARGETS)
+.PHONY: all test encoding-check refmodel-test assembler-test riscv-tests riscv-tests-build rtl-riscv-tests rtl-riscv-tests-build lint wave clean docs help $(TB_TARGETS)
 
 all: test
 
@@ -86,6 +86,24 @@ $(RISCV_TESTS_MARKER):
 	@echo ">>> building riscv-tests rv32ui (one-time, ~2 min)"
 	@bash scripts/build_riscv_tests.sh
 	@touch $(RISCV_TESTS_MARKER)
+
+# RTL conformance: the same rv32ui bodies, built against our bare-metal
+# CSR-free env, run on the single-cycle RTL. This is the stage-1
+# verification gate ("riscv-tests rv32ui passes on the RTL build").
+# Like the emulator suite it is not in `make test`: it needs the GCC
+# toolchain and a one-time build. CI runs it explicitly.
+RTL_RISCV_MARKER := tools/rtl_tests/_bin/.built
+
+rtl-riscv-tests: $(RTL_RISCV_MARKER)
+	@echo ">>> running rv32ui on the RTL"
+	$(MAKE) -C $(TB_DIR)/riscv SIM=verilator
+
+rtl-riscv-tests-build: $(RTL_RISCV_MARKER)
+
+$(RTL_RISCV_MARKER):
+	@echo ">>> building rv32ui for the RTL (one-time)"
+	@bash scripts/build_rtl_riscv_tests.sh
+	@touch $(RTL_RISCV_MARKER)
 
 # Explicit per-module dispatchers. One per testbench directory under tb/.
 test-counter:
@@ -177,6 +195,7 @@ help:
 	@echo "  refmodel-test      sanity tests for the Python RV32I emulator"
 	@echo "  assembler-test     sanity tests for the RV32I assembler"
 	@echo "  riscv-tests        run the official rv32ui suite through the emulator"
+	@echo "  rtl-riscv-tests    run the rv32ui suite on the single-cycle RTL"
 	@echo "  riscv-tests-build  build the rv32ui ELFs (needs riscv64-unknown-elf-gcc)"
 	@echo "  lint               verilator --lint-only over rtl/"
 	@echo "  wave               open most recent VCD in GTKWave"
