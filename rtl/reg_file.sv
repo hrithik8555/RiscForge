@@ -19,7 +19,22 @@
 
 `default_nettype none
 
-module reg_file (
+module reg_file #(
+    // Write-first bypass: when set, a read port reading the register
+    // being written this cycle returns the write data instead of the
+    // stored value. This is the right behavior for the PIPELINE, where
+    // the ID-stage read and the WB-stage write are different
+    // instructions in the same cycle and wd comes from a pipeline
+    // flop (no combinational loop).
+    //
+    // In the SINGLE-CYCLE datapath the read and write are the SAME
+    // instruction, and the architecture requires the read to see the
+    // OLD value (e.g. `addi a0, a0, 1` reads old a0). Enabling the
+    // bypass there is both architecturally wrong and a combinational
+    // loop (wd -> rd -> alu -> wd). So single-cycle top.sv sets
+    // WRITE_FIRST = 0; stage 2's pipeline sets it back to 1.
+    parameter bit WRITE_FIRST = 1'b1
+) (
     input  logic        clk,
     input  logic        rst,
     // write port
@@ -52,7 +67,7 @@ module reg_file (
     always_comb begin
         if (rs1 == 5'd0) begin
             rd1 = 32'h0;
-        end else if (we && (ws == rs1)) begin
+        end else if (WRITE_FIRST && we && (ws == rs1)) begin
             rd1 = wd;
         end else begin
             rd1 = xregs[rs1];
@@ -60,7 +75,7 @@ module reg_file (
 
         if (rs2 == 5'd0) begin
             rd2 = 32'h0;
-        end else if (we && (ws == rs2)) begin
+        end else if (WRITE_FIRST && we && (ws == rs2)) begin
             rd2 = wd;
         end else begin
             rd2 = xregs[rs2];
