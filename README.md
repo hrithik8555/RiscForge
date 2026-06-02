@@ -5,7 +5,11 @@ instruction set in SystemVerilog. This repo holds the design document, the
 RTL, a Python reference model, an assembler, a test suite, and (eventually)
 a writeup of how it performs.
 
-Status: early scaffolding. See `CHANGELOG.md` for what works at each tag.
+Status: v0.1-singlecycle. A complete single-cycle RV32I core with an assembler,
+a reference model, and the official riscv-tests rv32ui suite passing on both the
+model and the RTL. The pipeline and its performance features come next. See
+`CHANGELOG.md` for the full per-stage narrative and `docs/architecture.md` for
+the design.
 
 ## What this is and is not
 

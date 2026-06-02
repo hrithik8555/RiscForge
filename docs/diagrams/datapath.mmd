@@ -1,0 +1,58 @@
+%% Single-cycle RV32I datapath (stage 1, top.sv).
+%% Render with: make docs  (needs mermaid-cli: npm i -g @mermaid-js/mermaid-cli)
+%%
+%% One instruction per clock. The dashed edge is the only sequential
+%% feedback: next_pc is chosen combinationally and latched at the clock
+%% edge. Everything else in a cycle is combinational from the fetched
+%% instruction.
+flowchart LR
+    PC["pc_register<br/>(PC)"]
+    IMEM["instr_memory<br/>(combinational ROM)"]
+    DEC["decoder<br/>(control_t)"]
+    IMM["imm_gen<br/>(I/S/B/U/J)"]
+    RF["reg_file<br/>(32x32, x0=0)"]
+    MUXA{"A mux<br/>rs1 / PC"}
+    MUXB{"B mux<br/>rs2 / imm"}
+    ALU["alu"]
+    BR["branch_unit<br/>(taken?)"]
+    DMEM["data_memory<br/>(+ tohost/UART MMIO)"]
+    WB{"writeback mux<br/>ALU / MEM / PC+4"}
+    NPC{"next_pc mux<br/>pc+4 / target / rs1+imm"}
+    HALT["halt detect<br/>(ecall/ebreak/illegal/<br/>misaligned/tohost)"]
+
+    PC --> IMEM
+    IMEM -->|inst| DEC
+    IMEM -->|inst| IMM
+    IMEM -->|rs1,rs2,rd| RF
+
+    RF -->|rs1| MUXA
+    PC --> MUXA
+    RF -->|rs2| MUXB
+    IMM --> MUXB
+
+    MUXA --> ALU
+    MUXB --> ALU
+    DEC -->|alu_op| ALU
+
+    RF -->|rs1,rs2| BR
+    DEC -->|branch_op| BR
+
+    ALU -->|addr| DMEM
+    RF -->|rs2 = store data| DMEM
+    DEC -->|mem ctrl| DMEM
+
+    ALU --> WB
+    DMEM -->|load data| WB
+    PC -->|pc+4| WB
+    DEC -->|wb_src| WB
+    WB -->|rd write| RF
+
+    ALU -->|branch/jal target| NPC
+    ALU -->|jalr target & ~1| NPC
+    PC -->|pc+4| NPC
+    BR -->|taken| NPC
+    NPC -.->|latched at clock edge| PC
+
+    DEC --> HALT
+    DMEM -->|misaligned, tohost_we| HALT
+    HALT -->|freeze PC, block writes| PC
