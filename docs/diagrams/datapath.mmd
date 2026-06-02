@@ -1,3 +1,4 @@
+flowchart LR
 %% Single-cycle RV32I datapath (stage 1, top.sv).
 %% Render with: make docs  (needs mermaid-cli: npm i -g @mermaid-js/mermaid-cli)
 %%
@@ -5,7 +6,7 @@
 %% feedback: next_pc is chosen combinationally and latched at the clock
 %% edge. Everything else in a cycle is combinational from the fetched
 %% instruction.
-flowchart LR
+
     PC["pc_register<br/>(PC)"]
     IMEM["instr_memory<br/>(combinational ROM)"]
     DEC["decoder<br/>(control_t)"]
