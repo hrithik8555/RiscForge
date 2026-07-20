@@ -34,7 +34,7 @@ MOD_FILES := $(shell find $(RTL_DIR) -path $(RTL_DIR)/pkg -prune -o -name '*.sv'
 RTL_FILES := $(PKG_FILES) $(MOD_FILES)
 
 # Every module test we know about. Add a new line here when adding a module.
-TB_TARGETS := test-counter test-pc_register test-instr_memory test-reg_file test-alu test-imm_gen test-decoder test-data_memory test-branch_unit test-top test-program
+TB_TARGETS := test-counter test-pc_register test-instr_memory test-reg_file test-alu test-imm_gen test-decoder test-data_memory test-branch_unit test-top test-program test-if_id_reg test-id_ex_reg test-ex_mem_reg test-mem_wb_reg
 
 # ---------- top-level targets
 .PHONY: all test encoding-check refmodel-test assembler-test riscv-tests riscv-tests-build rtl-riscv-tests rtl-riscv-tests-build lint wave clean docs help $(TB_TARGETS)
@@ -149,6 +149,22 @@ test-top:
 test-program:
 	@echo ">>> running program-level integration + lockstep tests"
 	$(MAKE) -C $(TB_DIR)/program SIM=verilator
+
+test-if_id_reg:
+	@echo ">>> running if_id_reg tests"
+	$(MAKE) -C $(TB_DIR)/if_id_reg SIM=verilator
+
+test-id_ex_reg:
+	@echo ">>> running id_ex_reg tests"
+	$(MAKE) -C $(TB_DIR)/id_ex_reg SIM=verilator
+
+test-ex_mem_reg:
+	@echo ">>> running ex_mem_reg tests"
+	$(MAKE) -C $(TB_DIR)/ex_mem_reg SIM=verilator
+
+test-mem_wb_reg:
+	@echo ">>> running mem_wb_reg tests"
+	$(MAKE) -C $(TB_DIR)/mem_wb_reg SIM=verilator
 
 # Static lint over every RTL file. I want this clean from day one because
 # Verilator warnings catch real bugs (latches, width mismatches, unused).
