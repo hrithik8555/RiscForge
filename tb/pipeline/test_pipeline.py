@@ -100,10 +100,16 @@ def _emu(words):
     return cpu, reason
 
 
-async def lockstep(dut, src, name=""):
-    """Pad, assemble, run on RTL + emulator, compare the register file."""
+async def lockstep(dut, src, name="", do_pad=False):
+    """Assemble, run on RTL + emulator, compare the register file.
+
+    do_pad=True inserts NOPs between dependent instructions (the stage
+    2.1 mode). With forwarding in place most programs run un-padded, so
+    do_pad defaults to False now; the few remaining hazards forwarding
+    cannot cover (a load used one instruction later) get an explicit
+    NOP in the program itself."""
     cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, units="ns").start())
-    words = assemble(pad(src))
+    words = assemble(pad(src) if do_pad else src)
     assert words, f"{name}: assembler produced nothing"
 
     cpu, reason = _emu(words)
@@ -158,17 +164,56 @@ async def dependent_arith(dut):
 
 @cocotb.test()
 async def load_store(dut):
-    # 0x1234 does not fit in 12 bits, so build it as explicit lui+addi
-    # on separate lines (pad cannot split a large `li` for us).
+    # With forwarding a large li (LUI+ADDI) needs no padding: the ADDI
+    # gets the LUI result by EX-EX forward. The one hazard left is the
+    # load-use: a1 is loaded then used one instruction later, and a
+    # load's data is not ready in MEM so it cannot be forwarded EX-EX.
+    # One NOP bridges it until the load-use stall lands in 2.3.
     await lockstep(dut, """
         li   t0, 0x400
-        lui  a0, 0x1
-        addi a0, a0, 0x234
+        li   a0, 0x1234
         sw   a0, 0(t0)
         lw   a1, 0(t0)
+        nop
         addi a2, a1, 1
         ecall
     """, "load_store")
+
+
+# ---------- forwarding-specific paths
+
+@cocotb.test()
+async def back_to_back_deps(dut):
+    # The plan's EX-EX-vs-MEM-EX case. `add a3` reads a2 (produced by
+    # the instruction right before it: EX-EX) and a1 (two before it:
+    # MEM-EX) in the same instruction.
+    cpu = await lockstep(dut, """
+        li  a0, 1
+        add a1, a0, a0
+        add a2, a1, a1
+        add a3, a2, a1
+        ecall
+    """, "back_to_back_deps")
+    assert cpu.regs[10] == 1    # a0
+    assert cpu.regs[11] == 2    # a1
+    assert cpu.regs[12] == 4    # a2
+    assert cpu.regs[13] == 6    # a3 = a2 + a1 = 4 + 2
+
+
+@cocotb.test()
+async def pseudo_ops_unpadded(dut):
+    # Forwarding removes the 2.1 restriction: a large li (LUI+ADDI) and
+    # call (AUIPC+JALR) have internal dependencies that are now handled,
+    # so these run with no padding at all.
+    cpu = await lockstep(dut, """
+        li   a0, 0x12345
+        call double
+        ecall
+    double:
+        add  a0, a0, a0
+        ret
+    """, "pseudo_ops_unpadded")
+    assert cpu.regs[10] == 0x2468A
 
 
 # ---------- a taken branch loop (exercises EX-resolved flush)

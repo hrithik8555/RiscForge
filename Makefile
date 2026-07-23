@@ -34,7 +34,7 @@ MOD_FILES := $(shell find $(RTL_DIR) -path $(RTL_DIR)/pkg -prune -o -name '*.sv'
 RTL_FILES := $(PKG_FILES) $(MOD_FILES)
 
 # Every module test we know about. Add a new line here when adding a module.
-TB_TARGETS := test-counter test-pc_register test-instr_memory test-reg_file test-alu test-imm_gen test-decoder test-data_memory test-branch_unit test-top test-program test-if_id_reg test-id_ex_reg test-ex_mem_reg test-mem_wb_reg test-pipeline
+TB_TARGETS := test-counter test-pc_register test-instr_memory test-reg_file test-alu test-imm_gen test-decoder test-data_memory test-branch_unit test-top test-program test-if_id_reg test-id_ex_reg test-ex_mem_reg test-mem_wb_reg test-forwarding_unit test-pipeline
 
 # ---------- top-level targets
 .PHONY: all test encoding-check refmodel-test assembler-test riscv-tests riscv-tests-build rtl-riscv-tests rtl-riscv-tests-build lint wave clean docs help $(TB_TARGETS)
@@ -149,6 +149,10 @@ test-top:
 test-program:
 	@echo ">>> running program-level integration + lockstep tests"
 	$(MAKE) -C $(TB_DIR)/program SIM=verilator
+
+test-forwarding_unit:
+	@echo ">>> running forwarding_unit tests"
+	$(MAKE) -C $(TB_DIR)/forwarding_unit SIM=verilator
 
 test-pipeline:
 	@echo ">>> running pipeline lockstep tests (top_pipeline.sv)"

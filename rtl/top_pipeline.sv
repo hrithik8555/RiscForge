@@ -166,12 +166,7 @@ module top_pipeline
     // ---------------- ID/EX register
     control_t    ex_ctrl;
     logic [31:0] ex_pc, ex_pc4, ex_rs1_val, ex_rs2_val, ex_imm;
-    logic [4:0]  ex_rd_idx;
-    // verilator lint_off UNUSEDSIGNAL
-    // rs1/rs2 indices ride through ID/EX for the forwarding unit that
-    // lands in stage 2.2; nothing reads them at 2.1.
-    logic [4:0]  ex_rs1_idx, ex_rs2_idx;
-    // verilator lint_on UNUSEDSIGNAL
+    logic [4:0]  ex_rd_idx, ex_rs1_idx, ex_rs2_idx;
 
     id_ex_reg u_id_ex (
         .clk        (clk),
@@ -204,15 +199,61 @@ module top_pipeline
     logic [31:0] ex_alu_a, ex_alu_b, ex_alu_y;
     logic        ex_taken;
 
-    assign ex_alu_a = (ex_ctrl.alu_src_a == ALU_A_PC)  ? ex_pc  : ex_rs1_val;
-    assign ex_alu_b = (ex_ctrl.alu_src_b == ALU_B_IMM) ? ex_imm : ex_rs2_val;
+    // Forwarding. mem_* and wb_* are the EX/MEM and MEM/WB register
+    // outputs declared further down; referencing them here is fine at
+    // module scope. The selects come from forwarding_unit; the value
+    // each source carries is decided in the datapath below.
+    logic [1:0]  fwd_a, fwd_b;
+    forwarding_unit u_fwd (
+        .ex_rs1_idx       (ex_rs1_idx),
+        .ex_rs2_idx       (ex_rs2_idx),
+        .ex_mem_reg_write (mem_ctrl.reg_write),
+        .ex_mem_rd        (mem_rd_idx),
+        .mem_wb_reg_write (wb_ctrl.reg_write),
+        .mem_wb_rd        (wb_rd_idx),
+        .forward_a        (fwd_a),
+        .forward_b        (fwd_b)
+    );
+
+    // The value the MEM-stage instruction will write back, for an
+    // EX-EX forward. A JAL/JALR writes PC+4 (the link), not the ALU
+    // result, so pick by wb_src. A load (WB_MEM) has no data yet in
+    // MEM; that is the load-use case handled by the stall in 2.3, so
+    // the default (mem_alu_y) is never actually consumed for a load.
+    logic [31:0] mem_fwd_value;
+    always_comb begin
+        unique case (mem_ctrl.wb_src)
+            WB_PC4:  mem_fwd_value = mem_pc4;
+            default: mem_fwd_value = mem_alu_y;
+        endcase
+    end
+
+    // Forwarded operands. MEM/WB forwards the final writeback value
+    // (wb_data), which for a load is the loaded data, so a load-use
+    // hazard with one instruction of separation is covered here.
+    logic [31:0] ex_rs1_fwd, ex_rs2_fwd;
+    always_comb begin
+        unique case (fwd_a)
+            2'b01:   ex_rs1_fwd = mem_fwd_value;  // EX/MEM
+            2'b10:   ex_rs1_fwd = wb_data;        // MEM/WB
+            default: ex_rs1_fwd = ex_rs1_val;
+        endcase
+        unique case (fwd_b)
+            2'b01:   ex_rs2_fwd = mem_fwd_value;
+            2'b10:   ex_rs2_fwd = wb_data;
+            default: ex_rs2_fwd = ex_rs2_val;
+        endcase
+    end
+
+    assign ex_alu_a = (ex_ctrl.alu_src_a == ALU_A_PC)  ? ex_pc  : ex_rs1_fwd;
+    assign ex_alu_b = (ex_ctrl.alu_src_b == ALU_B_IMM) ? ex_imm : ex_rs2_fwd;
 
     alu u_alu (.a(ex_alu_a), .b(ex_alu_b), .op(ex_ctrl.alu_op), .y(ex_alu_y));
 
     branch_unit u_branch (
         .branch_op (ex_ctrl.branch_op),
-        .rs1       (ex_rs1_val),
-        .rs2       (ex_rs2_val),
+        .rs1       (ex_rs1_fwd),
+        .rs2       (ex_rs2_fwd),
         .taken     (ex_taken)
     );
 
@@ -235,7 +276,7 @@ module top_pipeline
         .flush      (1'b0),
         .ctrl_in    (ex_ctrl),
         .alu_y_in   (ex_alu_y),
-        .rs2_val_in (ex_rs2_val),
+        .rs2_val_in (ex_rs2_fwd),   // store data, forwarded
         .rd_idx_in  (ex_rd_idx),
         .pc4_in     (ex_pc4),
         .ctrl       (mem_ctrl),
