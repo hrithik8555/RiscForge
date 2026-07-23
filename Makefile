@@ -37,7 +37,7 @@ RTL_FILES := $(PKG_FILES) $(MOD_FILES)
 TB_TARGETS := test-counter test-pc_register test-instr_memory test-reg_file test-alu test-imm_gen test-decoder test-data_memory test-branch_unit test-top test-program test-if_id_reg test-id_ex_reg test-ex_mem_reg test-mem_wb_reg test-forwarding_unit test-hazard_unit test-pipeline
 
 # ---------- top-level targets
-.PHONY: all test encoding-check refmodel-test assembler-test riscv-tests riscv-tests-build rtl-riscv-tests rtl-riscv-tests-pipeline rtl-riscv-tests-build lint wave clean docs help $(TB_TARGETS)
+.PHONY: all test encoding-check refmodel-test assembler-test riscv-tests riscv-tests-build rtl-riscv-tests rtl-riscv-tests-pipeline rtl-riscv-tests-build cpi lint wave clean docs help $(TB_TARGETS)
 
 all: test
 
@@ -165,6 +165,12 @@ test-hazard_unit:
 test-pipeline:
 	@echo ">>> running pipeline lockstep tests (top_pipeline.sv)"
 	$(MAKE) -C $(TB_DIR)/pipeline SIM=verilator
+
+# CPI baseline measurement (not part of `make test`; it is a report, not
+# a pass/fail gate, though it does lockstep-check each benchmark).
+cpi:
+	@echo ">>> measuring CPI (predict-not-taken baseline)"
+	$(MAKE) -C $(TB_DIR)/cpi SIM=verilator
 
 test-if_id_reg:
 	@echo ">>> running if_id_reg tests"
