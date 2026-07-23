@@ -59,8 +59,11 @@ jobs:
       - name: riscv-tests rv32ui through refmodel
         run: make riscv-tests
 
-      - name: riscv-tests rv32ui on the RTL
+      - name: riscv-tests rv32ui on the single-cycle RTL
         run: make rtl-riscv-tests
+
+      - name: riscv-tests rv32ui on the pipeline
+        run: make rtl-riscv-tests-pipeline
 
       - name: lint
         run: make lint

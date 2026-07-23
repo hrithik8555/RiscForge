@@ -37,7 +37,7 @@ RTL_FILES := $(PKG_FILES) $(MOD_FILES)
 TB_TARGETS := test-counter test-pc_register test-instr_memory test-reg_file test-alu test-imm_gen test-decoder test-data_memory test-branch_unit test-top test-program test-if_id_reg test-id_ex_reg test-ex_mem_reg test-mem_wb_reg test-forwarding_unit test-hazard_unit test-pipeline
 
 # ---------- top-level targets
-.PHONY: all test encoding-check refmodel-test assembler-test riscv-tests riscv-tests-build rtl-riscv-tests rtl-riscv-tests-build lint wave clean docs help $(TB_TARGETS)
+.PHONY: all test encoding-check refmodel-test assembler-test riscv-tests riscv-tests-build rtl-riscv-tests rtl-riscv-tests-pipeline rtl-riscv-tests-build lint wave clean docs help $(TB_TARGETS)
 
 all: test
 
@@ -95,8 +95,12 @@ $(RISCV_TESTS_MARKER):
 RTL_RISCV_MARKER := tools/rtl_tests/_bin/.built
 
 rtl-riscv-tests: $(RTL_RISCV_MARKER)
-	@echo ">>> running rv32ui on the RTL"
+	@echo ">>> running rv32ui on the single-cycle RTL"
 	$(MAKE) -C $(TB_DIR)/riscv SIM=verilator
+
+rtl-riscv-tests-pipeline: $(RTL_RISCV_MARKER)
+	@echo ">>> running rv32ui on the pipeline"
+	$(MAKE) -C $(TB_DIR)/riscv_pipeline SIM=verilator
 
 rtl-riscv-tests-build: $(RTL_RISCV_MARKER)
 
