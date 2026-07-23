@@ -1,0 +1,38 @@
+flowchart LR
+%% 5-stage RV32I pipeline (stage 2, top_pipeline.sv).
+%% Render with: make docs  (needs mermaid-cli).
+%%
+%% Solid edges are the datapath flowing IF -> ID -> EX -> MEM -> WB
+%% through the four pipeline registers. Dashed edges are forwarding
+%% and the branch redirect. Branches resolve in ID (1-cycle penalty).
+
+    PC["PC"] --> IMEM["instr_memory"]
+    IMEM --> IFID[["IF/ID"]]
+
+    IFID --> DEC["decoder + imm_gen"]
+    IFID --> RF["reg_file<br/>(write-first)"]
+    DEC --> BR["branch_unit + target<br/>(resolve in ID)"]
+    RF --> BR
+    BR --> IDEX[["ID/EX"]]
+    DEC --> IDEX
+    RF --> IDEX
+
+    IDEX --> ALU["alu"]
+    ALU --> EXMEM[["EX/MEM"]]
+    IDEX --> EXMEM
+
+    EXMEM --> DMEM["data_memory"]
+    DMEM --> MEMWB[["MEM/WB"]]
+    EXMEM --> MEMWB
+
+    MEMWB --> WBMUX{"WB mux<br/>ALU / MEM / PC+4"}
+    WBMUX -->|write rd| RF
+
+    %% forwarding paths (dashed)
+    EXMEM -. "EX-EX fwd" .-> ALU
+    MEMWB -. "MEM-EX fwd" .-> ALU
+    EXMEM -. "MEM->ID fwd (incl load data)" .-> BR
+
+    %% control: branch redirect and stalls
+    BR -. "redirect PC + flush IF/ID" .-> PC
+    IDEX -. "load-use / branch-operand stall<br/>hold PC+IF/ID, bubble ID/EX" .-> IFID

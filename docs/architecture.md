@@ -120,3 +120,88 @@ decision and put untested machinery into the datapath.
   the core traps and halts instead.
 - FENCE and FENCE.I decode as NOPs.
 - The assembler is RV32I only and emits a flat image, not real ELF.
+
+# Stage 2: the 5-stage pipeline
+
+Stage 2 keeps the single-cycle core (`top.sv`) exactly as it was and
+adds a pipelined implementation of the same ISA in `top_pipeline.sv`.
+Both pass the same 38 rv32ui conformance tests. Building the pipeline
+additively meant every stage-1 test stayed green the whole way through,
+so a regression during the pipeline work was always the pipeline's
+fault, never a mystery in the shared modules.
+
+The five stages are the classic ones: IF (fetch), ID (decode, read
+registers, resolve branches), EX (ALU), MEM (load/store), WB (write
+back). Four pipeline registers separate them: `if_id_reg`, `id_ex_reg`,
+`ex_mem_reg`, `mem_wb_reg`. Each latches its stage payload once per
+clock and carries the whole `control_t` bundle, so adding a control
+signal is a one-line change to the package. See
+`docs/diagrams/pipeline.mmd`.
+
+## Hazards: how a value gets where it is needed in time
+
+A pipeline breaks the single-cycle assumption that a result is ready the
+instant the next instruction wants it. Three mechanisms fix that.
+
+**Forwarding (`forwarding_unit`).** When the instruction in EX needs a
+register a still-in-flight older instruction produced, the value is
+routed straight to the EX operand instead of waiting for it to reach the
+register file. Two sources: EX/MEM (the instruction in MEM, the younger
+producer, which wins) and MEM/WB (the instruction in WB). The EX-EX
+value is picked by `wb_src` so a JAL/JALR forwards its PC+4 link, not
+the ALU result; the MEM-EX value is the final writeback value, which for
+a load is the loaded data. A write to `x0` never forwards.
+
+**Load-use stall (`hazard_unit`).** Forwarding covers everything except
+a load whose result is used by the very next instruction: the data is
+not ready in MEM, so there is nothing to forward yet. A one-cycle stall
+holds the consumer in ID until the load reaches WB, where the MEM-EX
+forward delivers the data. The unit derives which registers an opcode
+actually reads, so it does not stall on an rs2 field that is really
+immediate bits.
+
+**Write-first register file.** A value written in WB is visible to a
+same-cycle ID read, which covers a producer three stages ahead of its
+consumer with no forwarding path at all. This is the `WRITE_FIRST`
+parameter that is off for the single-cycle core (where it would be a
+combinational loop) and on for the pipeline.
+
+## Branches resolve in ID
+
+Conditional branches, JAL and JALR resolve in the ID stage, not EX, so a
+taken branch flushes only the single wrong-path instruction behind it
+(in IF/ID) rather than two. The penalty is one cycle. The ID stage has
+its own comparator, a PC-relative target adder, and the JALR target.
+
+The hard part is operand freshness for the ID compare. A producer in WB
+is handled by the write-first register file; a producer in MEM is
+forwarded from the MEM stage, including a load's data, so a load feeding
+a branch two instructions later needs no stall. The one case left is a
+producer still in EX, immediately ahead of the branch: its value is not
+computed yet, so a one-cycle branch-operand stall holds the branch in ID
+until the producer reaches MEM. That stall only fires on a register the
+control instruction actually reads.
+
+The baseline branch policy is predict-not-taken: the pipeline fetches
+the fall-through and pays the one-cycle flush on every taken branch.
+Stage 3 replaces that with a 2-bit predictor and a BTB.
+
+## Halt in a pipeline
+
+Halting is trickier than in single-cycle, because when the halting
+instruction is detected there are others in flight. A shadow "cause
+pipeline" runs alongside the real one: ecall/ebreak/illegal are tagged
+in ID, misaligned/tohost in MEM, and the cause is carried to WB.
+`halted` asserts when a nonzero cause reaches WB, at which point every
+older instruction has committed, the halting instruction commits
+nothing, and no younger instruction has written back, so the register
+file matches the emulator exactly.
+
+## Performance
+
+CPI is measured against the emulator's instruction count on the shared
+benchmark suite (`make cpi`). The predict-not-taken baseline is about
+1.29 CPI overall, with the tightest branch loop (GCD) worst at 1.36.
+See `docs/performance.md` for the table and the method. Those numbers
+are the baseline the stage-3 predictor and stage-4 cache are measured
+against.
