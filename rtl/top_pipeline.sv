@@ -66,14 +66,22 @@ module top_pipeline
     localparam logic [2:0] HC_TOHOST     = 3'd5;
 
     // ---------------------------------------------------------------
-    // global stall / flush wiring (2.1: only branch flush is active)
+    // stall / flush wiring
     // ---------------------------------------------------------------
-    logic pipe_en;               // advance the whole pipe (frozen on halt)
+    logic pipe_en;               // back of pipe (EX/MEM/WB): frozen on halt
+    logic front_en;              // PC + IF/ID: also frozen on a load-use stall
     logic ex_redirect;           // a taken branch/jump resolved in EX
+    logic stall;                 // load-use stall (from hazard_unit)
     logic halted_q;
 
     assign halted     = (wb_hc != HC_NONE) | halted_q;
     assign pipe_en    = ~halted;
+    // On a load-use stall the front of the pipe holds (the consumer
+    // waits in ID) while the back keeps draining, and a bubble goes
+    // into ID/EX. A branch redirect and a load-use stall cannot both
+    // occur: EX holds one instruction, and it is either the branch or
+    // the load, not both.
+    assign front_en   = ~halted & ~stall;
     // wb_hc is nonzero only for a halting instruction in WB, and the
     // pipe freezes the same cycle (pipe_en=0), so wb_hc holds. Drive
     // the cause straight from it, valid the cycle halted asserts.
@@ -87,7 +95,7 @@ module top_pipeline
     pc_register #(.PC_RESET(PC_RESET)) u_pc (
         .clk     (clk),
         .rst     (rst),
-        .en      (pipe_en),
+        .en      (front_en),
         .next_pc (next_pc),
         .pc      (if_pc)
     );
@@ -106,7 +114,7 @@ module top_pipeline
     if_id_reg u_if_id (
         .clk     (clk),
         .rst     (rst),
-        .en      (pipe_en),
+        .en      (front_en),
         .flush   (ex_redirect),
         .pc_in   (if_pc),
         .pc4_in  (if_pc4),
@@ -130,6 +138,18 @@ module top_pipeline
     assign id_rs1_idx = id_inst[19:15];
     assign id_rs2_idx = id_inst[24:20];
     assign id_rd_idx  = id_inst[11:7];
+
+    // Load-use hazard: a load in EX feeding a source this ID
+    // instruction reads. ex_ctrl and ex_rd_idx are the ID/EX register
+    // outputs (declared in the EX section below).
+    hazard_unit u_hazard (
+        .ex_mem_read (ex_ctrl.mem_read),
+        .ex_rd_idx   (ex_rd_idx),
+        .id_opcode   (opcode_e'(id_inst[6:0])),
+        .id_rs1_idx  (id_rs1_idx),
+        .id_rs2_idx  (id_rs2_idx),
+        .stall       (stall)
+    );
 
     // register file: read here in ID, write from WB. Write-first so a
     // WB write is visible to a same-cycle ID read (the only hazard the
@@ -168,11 +188,13 @@ module top_pipeline
     logic [31:0] ex_pc, ex_pc4, ex_rs1_val, ex_rs2_val, ex_imm;
     logic [4:0]  ex_rd_idx, ex_rs1_idx, ex_rs2_idx;
 
+    // A load-use stall inserts a bubble here (the consumer stays in ID)
+    // exactly like a branch redirect does.
     id_ex_reg u_id_ex (
         .clk        (clk),
         .rst        (rst),
         .en         (pipe_en),
-        .flush      (ex_redirect),
+        .flush      (ex_redirect | stall),
         .ctrl_in    (id_ctrl),
         .pc_in      (id_pc),
         .pc4_in     (id_pc4),
@@ -372,8 +394,9 @@ module top_pipeline
             mem_hc_carried <= HC_NONE;
             wb_hc          <= HC_NONE;
         end else if (pipe_en) begin
-            // a flushed (wrong-path) instruction carries no halt cause
-            ex_hc          <= ex_redirect ? HC_NONE : id_hc;
+            // A flushed wrong-path instruction and a load-use bubble
+            // both carry no halt cause, matching the ID/EX bubble.
+            ex_hc          <= (ex_redirect | stall) ? HC_NONE : id_hc;
             mem_hc_carried <= ex_hc;
             wb_hc          <= mem_hc;
         end

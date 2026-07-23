@@ -164,20 +164,37 @@ async def dependent_arith(dut):
 
 @cocotb.test()
 async def load_store(dut):
-    # With forwarding a large li (LUI+ADDI) needs no padding: the ADDI
-    # gets the LUI result by EX-EX forward. The one hazard left is the
-    # load-use: a1 is loaded then used one instruction later, and a
-    # load's data is not ready in MEM so it cannot be forwarded EX-EX.
-    # One NOP bridges it until the load-use stall lands in 2.3.
+    # Fully un-padded now: the load-use (a1 loaded then used by the very
+    # next instruction) is covered by the one-cycle stall in 2.3.
     await lockstep(dut, """
         li   t0, 0x400
         li   a0, 0x1234
         sw   a0, 0(t0)
         lw   a1, 0(t0)
-        nop
         addi a2, a1, 1
         ecall
     """, "load_store")
+
+
+@cocotb.test()
+async def load_then_branch(dut):
+    # A branch that compares a value loaded by the immediately preceding
+    # instruction. The branch is in ID while the load is in EX, so the
+    # load-use stall fires; after the stall the loaded value is forwarded
+    # to the compare.
+    cpu = await lockstep(dut, """
+        li   t0, 0x400
+        li   a0, 42
+        sw   a0, 0(t0)
+        li   a2, 42
+        lw   a1, 0(t0)
+        beq  a1, a2, match
+        li   a3, 999
+    match:
+        li   a3, 7
+        ecall
+    """, "load_then_branch")
+    assert cpu.regs[13] == 7    # took the branch, so a3 = 7
 
 
 # ---------- forwarding-specific paths
