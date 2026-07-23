@@ -177,6 +177,24 @@ async def load_store(dut):
 
 
 @cocotb.test()
+async def branch_after_alu(dut):
+    # The branch compares a value produced by the instruction right
+    # before it. With branch resolution in ID, that producer is still
+    # in EX, so the branch-operand stall fires; after one cycle the
+    # producer is in MEM and its value is forwarded to the compare.
+    cpu = await lockstep(dut, """
+        li   a0, 5
+        addi a1, a0, 0
+        beq  a1, a0, tgt
+        li   a2, 999
+    tgt:
+        li   a2, 7
+        ecall
+    """, "branch_after_alu")
+    assert cpu.regs[12] == 7    # branch taken (5 == 5)
+
+
+@cocotb.test()
 async def load_then_branch(dut):
     # A branch that compares a value loaded by the immediately preceding
     # instruction. The branch is in ID while the load is in EX, so the

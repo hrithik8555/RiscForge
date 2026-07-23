@@ -69,18 +69,17 @@ module top_pipeline
     // stall / flush wiring
     // ---------------------------------------------------------------
     logic pipe_en;               // back of pipe (EX/MEM/WB): frozen on halt
-    logic front_en;              // PC + IF/ID: also frozen on a load-use stall
-    logic ex_redirect;           // a taken branch/jump resolved in EX
-    logic stall;                 // load-use stall (from hazard_unit)
+    logic front_en;              // PC + IF/ID: also frozen on a stall
+    logic id_redirect;           // a taken branch/jump resolved in ID
+    logic stall;                 // load-use or branch-operand stall
     logic halted_q;
 
     assign halted     = (wb_hc != HC_NONE) | halted_q;
     assign pipe_en    = ~halted;
-    // On a load-use stall the front of the pipe holds (the consumer
+    // On a stall the front of the pipe holds (the stalling instruction
     // waits in ID) while the back keeps draining, and a bubble goes
-    // into ID/EX. A branch redirect and a load-use stall cannot both
-    // occur: EX holds one instruction, and it is either the branch or
-    // the load, not both.
+    // into ID/EX. A branch resolves in ID and redirects the PC while
+    // flushing only the one wrong-path instruction behind it in IF/ID.
     assign front_en   = ~halted & ~stall;
     // wb_hc is nonzero only for a halting instruction in WB, and the
     // pipe freezes the same cycle (pipe_en=0), so wb_hc holds. Drive
@@ -115,7 +114,7 @@ module top_pipeline
         .clk     (clk),
         .rst     (rst),
         .en      (front_en),
-        .flush   (ex_redirect),
+        .flush   (id_redirect),
         .pc_in   (if_pc),
         .pc4_in  (if_pc4),
         .inst_in (if_inst),
@@ -142,13 +141,14 @@ module top_pipeline
     // Load-use hazard: a load in EX feeding a source this ID
     // instruction reads. ex_ctrl and ex_rd_idx are the ID/EX register
     // outputs (declared in the EX section below).
+    logic load_use_stall;
     hazard_unit u_hazard (
         .ex_mem_read (ex_ctrl.mem_read),
         .ex_rd_idx   (ex_rd_idx),
         .id_opcode   (opcode_e'(id_inst[6:0])),
         .id_rs1_idx  (id_rs1_idx),
         .id_rs2_idx  (id_rs2_idx),
-        .stall       (stall)
+        .stall       (load_use_stall)
     );
 
     // register file: read here in ID, write from WB. Write-first so a
@@ -183,18 +183,76 @@ module top_pipeline
         else                      id_hc = HC_NONE;
     end
 
+    // ---------------------------------------------------------------
+    // Branch / jump resolution in ID (1-cycle penalty)
+    // ---------------------------------------------------------------
+    // Which control instruction this is and which registers it reads.
+    logic id_is_cond_branch, id_is_jalr, id_ctrl_reads_rs1, id_ctrl_reads_rs2;
+    assign id_is_cond_branch = (id_ctrl.branch_op != BR_NONE) && (id_ctrl.branch_op != BR_JUMP);
+    assign id_is_jalr        = (id_ctrl.branch_op == BR_JUMP) && id_ctrl.jalr;
+    assign id_ctrl_reads_rs1 = id_is_cond_branch || id_is_jalr; // compare or target base
+    assign id_ctrl_reads_rs2 = id_is_cond_branch;               // second compare operand
+
+    // Forward to the ID comparator from the MEM stage. mem_wb_value is
+    // the value the MEM instruction will write back, INCLUDING a load's
+    // data (mem_rdata), so a load feeding a branch two instructions
+    // later needs no stall. A producer already in WB is covered by the
+    // write-first register file, so id_rs*_val already reflects it.
+    logic [31:0] id_rs1_cmp, id_rs2_cmp;
+    logic        mem_writes_rs1, mem_writes_rs2;
+    assign mem_writes_rs1 = mem_ctrl.reg_write && (mem_rd_idx != 5'd0) && (mem_rd_idx == id_rs1_idx);
+    assign mem_writes_rs2 = mem_ctrl.reg_write && (mem_rd_idx != 5'd0) && (mem_rd_idx == id_rs2_idx);
+    assign id_rs1_cmp = mem_writes_rs1 ? mem_wb_value : id_rs1_val;
+    assign id_rs2_cmp = mem_writes_rs2 ? mem_wb_value : id_rs2_val;
+
+    // The one case forwarding cannot cover: the operand is still being
+    // computed by the instruction in EX (the producer immediately ahead
+    // of the branch). Stall one cycle so that producer reaches MEM,
+    // where its value can be forwarded. Only stall on a register the
+    // control instruction actually reads.
+    logic branch_stall;
+    assign branch_stall =
+        ex_ctrl.reg_write && (ex_rd_idx != 5'd0) &&
+        ((id_ctrl_reads_rs1 && (ex_rd_idx == id_rs1_idx)) ||
+         (id_ctrl_reads_rs2 && (ex_rd_idx == id_rs2_idx)));
+
+    assign stall = load_use_stall | branch_stall;
+
+    // Resolve. branch_unit handles the six conditions and BR_JUMP
+    // (always taken). Do not act while stalling: the operands are not
+    // ready yet, so the redirect waits until the stall clears.
+    logic id_taken;
+    branch_unit u_branch (
+        .branch_op (id_ctrl.branch_op),
+        .rs1       (id_rs1_cmp),
+        .rs2       (id_rs2_cmp),
+        .taken     (id_taken)
+    );
+
+    logic [31:0] id_jalr_target, id_pcrel_target;
+    assign id_jalr_target  = (id_rs1_cmp + id_imm) & ~32'h1;   // JALR: rs1 + imm
+    assign id_pcrel_target = id_pc + id_imm;                    // branch / JAL: PC + imm
+    logic [31:0] id_target;
+    assign id_target   = id_ctrl.jalr ? id_jalr_target : id_pcrel_target;
+    assign id_redirect = id_taken && ~stall;
+
+    // next PC: redirect on a resolved branch/jump, else fall through.
+    assign next_pc = id_redirect ? id_target : if_pc4;
+
     // ---------------- ID/EX register
     control_t    ex_ctrl;
     logic [31:0] ex_pc, ex_pc4, ex_rs1_val, ex_rs2_val, ex_imm;
     logic [4:0]  ex_rd_idx, ex_rs1_idx, ex_rs2_idx;
 
-    // A load-use stall inserts a bubble here (the consumer stays in ID)
-    // exactly like a branch redirect does.
+    // A stall inserts a bubble here (the stalling instruction stays in
+    // ID). A branch redirect does NOT bubble ID/EX: the branch itself
+    // flows on into EX; only its wrong-path successor in IF/ID is
+    // squashed.
     id_ex_reg u_id_ex (
         .clk        (clk),
         .rst        (rst),
         .en         (pipe_en),
-        .flush      (ex_redirect | stall),
+        .flush      (stall),
         .ctrl_in    (id_ctrl),
         .pc_in      (id_pc),
         .pc4_in     (id_pc4),
@@ -219,7 +277,6 @@ module top_pipeline
     // EX stage
     // ===============================================================
     logic [31:0] ex_alu_a, ex_alu_b, ex_alu_y;
-    logic        ex_taken;
 
     // Forwarding. mem_* and wb_* are the EX/MEM and MEM/WB register
     // outputs declared further down; referencing them here is fine at
@@ -272,19 +329,9 @@ module top_pipeline
 
     alu u_alu (.a(ex_alu_a), .b(ex_alu_b), .op(ex_ctrl.alu_op), .y(ex_alu_y));
 
-    branch_unit u_branch (
-        .branch_op (ex_ctrl.branch_op),
-        .rs1       (ex_rs1_fwd),
-        .rs2       (ex_rs2_fwd),
-        .taken     (ex_taken)
-    );
-
-    logic [31:0] ex_target;
-    assign ex_target   = ex_ctrl.jalr ? (ex_alu_y & ~32'h1) : ex_alu_y;
-    assign ex_redirect = ex_taken;   // BR_JUMP always taken; BR_NONE never
-
-    // next PC: redirect on a resolved branch/jump, else fall through.
-    assign next_pc = ex_redirect ? ex_target : if_pc4;
+    // Branches, JAL and JALR are resolved in ID (see the ID stage), so
+    // the EX stage no longer redirects. For a jump the EX ALU result is
+    // unused (the link value PC+4 is what gets written back).
 
     // ---------------- EX/MEM register
     control_t    mem_ctrl;
@@ -335,6 +382,19 @@ module top_pipeline
         .uart_we      (uart_we),
         .uart_data    (uart_data)
     );
+
+    // The value the MEM instruction will write back, used to forward to
+    // the ID-stage branch comparator. Unlike the EX-EX mem_fwd_value,
+    // this one includes a load's data (mem_rdata), because a branch in
+    // ID can legitimately depend on a load already in MEM.
+    logic [31:0] mem_wb_value;
+    always_comb begin
+        unique case (mem_ctrl.wb_src)
+            WB_MEM:  mem_wb_value = mem_rdata;
+            WB_PC4:  mem_wb_value = mem_pc4;
+            default: mem_wb_value = mem_alu_y;
+        endcase
+    end
 
     // ---------------- MEM/WB register
     // verilator lint_off UNUSEDSIGNAL
@@ -394,9 +454,10 @@ module top_pipeline
             mem_hc_carried <= HC_NONE;
             wb_hc          <= HC_NONE;
         end else if (pipe_en) begin
-            // A flushed wrong-path instruction and a load-use bubble
-            // both carry no halt cause, matching the ID/EX bubble.
-            ex_hc          <= (ex_redirect | stall) ? HC_NONE : id_hc;
+            // A stall bubble carries no halt cause, matching the ID/EX
+            // bubble. A branch redirect does not bubble ID/EX (the
+            // branch flows on), so there is no redirect term here.
+            ex_hc          <= stall ? HC_NONE : id_hc;
             mem_hc_carried <= ex_hc;
             wb_hc          <= mem_hc;
         end
